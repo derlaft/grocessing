@@ -15,6 +15,9 @@ import (
 var (
 	// KeyCode contains current pressed key
 	KeyCode Key
+
+	// Mouse State
+	MouseX, MouseY, PMouseX, PMouseY int
 )
 
 var (
@@ -137,11 +140,13 @@ func checkEvent() {
 	for event := sdl.PollEvent(); event != nil; event = sdl.PollEvent() {
 		switch t := event.(type) {
 		case *sdl.QuitEvent:
-			fmt.Println("EXIT")
 			stop <- true
 		case *sdl.KeyDownEvent:
 			KeyCode = Key(t.Keysym.Sym)
 			sketch.KeyPressed()
+		case *sdl.MouseMotionEvent:
+			PMouseX, PMouseY = MouseX, MouseY
+			MouseX, MouseY = int(t.X), int(t.Y)
 		}
 	}
 }
