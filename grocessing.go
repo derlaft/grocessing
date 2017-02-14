@@ -18,31 +18,43 @@ var (
 
 	// Mouse State
 	MouseX, MouseY, PMouseX, PMouseY int
-)
 
-var (
+	// global sdl drawing stuff
 	window   *sdl.Window
 	renderer *sdl.Renderer
 	font     *ttf.Font
 
-	fpsCap    uint = 30
-	frames    uint
-	lastStart int64
+	// fps control stuff
+	fpsCap              int64 = 60
+	fps                 uint
+	lastStart           int64
+	secondDuration      = time.Second.Nanoseconds()
+	millisecondDuration = time.Millisecond.Nanoseconds()
 
+	// main sketch
 	sketch Sketch
 
-	stop = make(chan bool)
+	// channel to await termination
+	stop    = make(chan bool)
+	running = true
 
 	winTitle = "Debug view"
 
-	m     *Matrix
-	stack []*Matrix
+	// drawing states stack (for pop/push use)
+	m     *matrix
+	stack []*matrix
 )
 
 const (
+	// Font styles
 	STYLE_NORMAL = iota
 	STYLE_BOLD
 
+	// Text aligment options
+	ALIGN_CENTER = iota
+	ALIGN_LEFT
+
+	// Keyboard keys
 	KEY_UP     = Key(sdl.K_UP)
 	KEY_DOWN   = Key(sdl.K_DOWN)
 	KEY_LEFT   = Key(sdl.K_LEFT)
@@ -50,12 +62,41 @@ const (
 	KEY_RETURN = Key(sdl.K_RETURN)
 	KEY_ESC    = Key(sdl.K_ESCAPE)
 	KEY_SPACE  = Key(sdl.K_SPACE)
-
-	ALIGN_CENTER = iota
-	ALIGN_LEFT
 )
 
-type Matrix struct {
+// wrapper types
+type (
+	Color *sdl.Color
+	Font  *ttf.Font
+	Key   uint32
+
+	Image struct {
+		*sdl.Texture
+		w, h int32
+	}
+)
+
+// sketch one-method interfaces
+type (
+	Sketch interface {
+		Draw()
+	}
+
+	SketchSetup interface {
+		Setup()
+	}
+
+	SketchKeyPressed interface {
+		KeyPressed()
+	}
+
+	SketchMouseClicked interface {
+		MouseClicked()
+	}
+)
+
+// defines drawing state
+type matrix struct {
 	fillColor   Color
 	strokeColor Color
 	draw_stroke bool
@@ -65,22 +106,8 @@ type Matrix struct {
 	x, y        int
 }
 
-type Color *sdl.Color
-type Font *ttf.Font
-
-type Image struct {
-	*sdl.Texture
-	w, h int32
-}
-
-type Sketch interface {
-	Setup()
-	Draw()
-	KeyPressed()
-}
-
-type Key uint32
-
+// GrocessingStart is library entry-point
+// I wish one could create 'main()' in the library
 func GrocessingStart(s Sketch) {
 
 	sketch = s
@@ -90,7 +117,7 @@ func GrocessingStart(s Sketch) {
 	}
 
 	m = default_matrix()
-	stack = []*Matrix{m}
+	stack = []*matrix{m}
 
 	window, err = sdl.CreateWindow(winTitle, sdl.WINDOWPOS_UNDEFINED, sdl.WINDOWPOS_UNDEFINED,
 		0, 0, sdl.WINDOW_SHOWN)
@@ -100,59 +127,96 @@ func GrocessingStart(s Sketch) {
 	}
 	defer window.Destroy()
 
+	// That (in theory) should enable anti-alising
+	// but I see no diffrence at all
+	// @TODO: check if it works
+	sdl.SetHint(sdl.HINT_RENDER_SCALE_QUALITY, "1")
+
 	renderer, err = sdl.CreateRenderer(window, -1, sdl.RENDERER_ACCELERATED)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create renderer: %s\n", err)
 		os.Exit(2)
 	}
 
-	sketch.Setup()
+	if ss, ok := sketch.(SketchSetup); ok {
+		ss.Setup()
+	}
 
-	//draw routine
-	go func() {
-		defer renderer.Destroy()
-		runtime.LockOSThread()
-		var diff int64
-		for {
-			lastStart := time.Now().UnixNano()
-			renderer.Clear()
-			sketch.Draw()
-			renderer.Present()
-			diff += time.Now().UnixNano() - lastStart
-			if diff >= 1000 {
-				frames = 0
-			}
-			frames++
-
-			go checkEvent()
-
-			if frames < 1000/fpsCap {
-				sdl.Delay(uint32(1000/fpsCap - frames))
-			}
-		}
-	}()
+	go mainLoop()
 
 	<-stop
 	os.Exit(0)
 }
 
-func checkEvent() {
-	for event := sdl.PollEvent(); event != nil; event = sdl.PollEvent() {
-		switch t := event.(type) {
-		case *sdl.QuitEvent:
-			stop <- true
-		case *sdl.KeyDownEvent:
-			KeyCode = Key(t.Keysym.Sym)
-			sketch.KeyPressed()
-		case *sdl.MouseMotionEvent:
-			PMouseX, PMouseY = MouseX, MouseY
-			MouseX, MouseY = int(t.X), int(t.Y)
+// draw routine
+// @TODO: stop it
+func mainLoop() {
+
+	// it is important to lock main thread there
+	defer renderer.Destroy()
+	runtime.LockOSThread()
+
+	frameNotify := make(chan bool)
+	defer close(frameNotify)
+	go measureFps(frameNotify)
+
+	for running {
+		go checkEvent()
+
+		lastStart := time.Now().UnixNano()
+
+		renderer.Clear()
+		sketch.Draw()
+		renderer.Present()
+		frameNotify <- true
+
+		diff := time.Now().UnixNano() - lastStart
+
+		if diff < secondDuration/fpsCap {
+			sdl.Delay(uint32((secondDuration/fpsCap - diff) / millisecondDuration))
 		}
 	}
 }
 
-func default_matrix() *Matrix {
-	return &Matrix{
+func measureFps(newFrameDrawed <-chan bool) {
+	var frames int64
+	measurementStart := time.Now()
+
+	for range newFrameDrawed {
+		if frames++; frames == 100 {
+			fps = uint(float64(frames) / time.Since(measurementStart).Seconds())
+			frames = 0
+			measurementStart = time.Now()
+		}
+	}
+
+}
+
+// event polling thread
+func checkEvent() {
+	for event := sdl.PollEvent(); event != nil; event = sdl.PollEvent() {
+		switch t := event.(type) {
+		case *sdl.QuitEvent:
+			running = false
+			stop <- true
+		case *sdl.KeyDownEvent:
+			KeyCode = Key(t.Keysym.Sym)
+			if ss, ok := sketch.(SketchKeyPressed); ok {
+				ss.KeyPressed()
+			}
+		case *sdl.MouseMotionEvent:
+			PMouseX, PMouseY = MouseX, MouseY
+			MouseX, MouseY = int(t.X), int(t.Y)
+		case *sdl.MouseButtonEvent:
+			if ss, ok := sketch.(SketchMouseClicked); ok {
+				ss.MouseClicked()
+			}
+		}
+	}
+}
+
+func default_matrix() *matrix {
+	return &matrix{
 		fillColor:   Hc(0),
 		strokeColor: Hc(0xffffff),
 		draw_stroke: true,
@@ -181,8 +245,8 @@ func NoFill() {
 	m.draw_fill = false
 }
 
-func CreateFont(name string, a int) (Font, error) {
-	font, err := ttf.OpenFont(name, a)
+func CreateFont(filename string, size int) (Font, error) {
+	font, err := ttf.OpenFont(filename, size)
 	if err != nil {
 		return nil, errors.New(fmt.Sprintf("Could not open font: %v", err))
 	}
@@ -248,7 +312,15 @@ func Rect(x, y, w, h int) {
 		)
 		renderer.DrawRect(r)
 	}
+}
 
+func Line(x1, y1, x2, y2 int) {
+	if m.draw_stroke && m.strokeColor != nil {
+		renderer.SetDrawColor(
+			m.strokeColor.R, m.strokeColor.G, m.strokeColor.B, m.strokeColor.A,
+		)
+	}
+	renderer.DrawLine(x1, y1, x2, y2)
 }
 
 func TextAlign(a int) {
@@ -359,4 +431,8 @@ func PopMatrix() {
 func Translate(x, y int) {
 	m.x += x
 	m.y += y
+}
+
+func FPS() uint {
+	return fps
 }
