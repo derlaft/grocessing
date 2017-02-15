@@ -1,8 +1,12 @@
 package grocessing
 
+// TODO-List
+// * Check all SDL errors carefully
+
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"runtime"
 	"time"
@@ -208,7 +212,7 @@ func checkEvent() {
 			PMouseX, PMouseY = MouseX, MouseY
 			MouseX, MouseY = int(t.X), int(t.Y)
 		case *sdl.MouseButtonEvent:
-			if ss, ok := sketch.(SketchMouseClicked); ok {
+			if ss, ok := sketch.(SketchMouseClicked); ok && t.Type == sdl.MOUSEBUTTONDOWN {
 				ss.MouseClicked()
 			}
 		}
@@ -221,6 +225,8 @@ func default_matrix() *matrix {
 		strokeColor: Hc(0xffffff),
 		draw_stroke: true,
 		draw_fill:   true,
+		textStyle:   STYLE_NORMAL,
+		textAlign:   ALIGN_LEFT,
 	}
 }
 
@@ -335,6 +341,7 @@ func Text(txt string, x, y, w, h int) {
 	if len(txt) == 0 {
 		return
 	}
+
 	switch m.textStyle {
 	case STYLE_NORMAL:
 		surface, err = font.RenderUTF8_Blended(txt, *m.fillColor)
@@ -344,6 +351,11 @@ func Text(txt string, x, y, w, h int) {
 	if err != nil {
 		panic(err)
 	}
+	if surface == nil {
+		log.Println("Warning: nil surface")
+		return
+	}
+
 	texture, err := renderer.CreateTextureFromSurface(surface)
 	surface.Free()
 	if err != nil {
@@ -368,7 +380,9 @@ func Text(txt string, x, y, w, h int) {
 			int32(rw),
 			int32(rh),
 		}
-
+	default:
+		log.Println("Invalid Text Align value! Not drawing text")
+		return
 	}
 
 	renderer.Copy(texture, nil, &r)
